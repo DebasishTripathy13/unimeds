@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""
+Offline Whisper Speech-to-Text Converter
+Supports multiple languages with focus on English
+"""
+
+import whisper
+import os
+import argparse
+import time
+from pathlib import Path
+
+class WhisperSTT:
+    def __init__(self, model_size="base", device="cpu"):
+        """
+        Initialize Whisper STT
+
+        Args:
+            model_size: Model size - "tiny", "base", "small", "medium", "large"
+            device: "cpu" or "cuda" for GPU acceleration
+        """
+        self.model_size = model_size
+        self.device = device
+        print(f"Loading Whisper {model_size} model...")
+        self.model = whisper.load_model(model_size, device=device)
+        print(f"Model loaded successfully on {device}")
+
+    def transcribe_file(self, audio_path, language=None, task="transcribe"):
+        """
+        Transcribe audio file
+
+        Args:
+            audio_path: Path to audio file
+            language: Language code (e.g., "en", "es", "fr") or None for auto-detect
+            task: "transcribe" or "translate" (translate to English)
+
+        Returns:
+            Dictionary with transcription results
+        """
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+        print(f"Transcribing: {audio_path}")
+        start_time = time.time()
+
+        # Transcribe with options
+        result = self.model.transcribe(
+            audio_path,
+            language=language,
+            task=task,
+            verbose=False
+        )
+
+        end_time = time.time()
+        processing_time = end_time - start_time
+
+        return {
+            "text": result["text"].strip(),
+            "language": result["language"],
+            "segments": result["segments"],
+            "processing_time": processing_time
+        }
+
+    def transcribe_with_timestamps(self, audio_path, language=None):
+        """
+        Transcribe with detailed timestamps
+
+        Args:
+            audio_path: Path to audio file
+            language: Language code or None for auto-detect
+
+        Returns:
+            List of segments with timestamps
+        """
+        result = self.transcribe_file(audio_path, language)
+
+        segments = []
+        for segment in result["segments"]:
+            segments.append({
+                "start": segment["start"],
+                "end": segment["end"],
+                "text": segment["text"].strip(),
+                "confidence": segment.get("avg_logprob", 0)
+            })
+
+        return segments
+
+    def batch_transcribe(self, audio_folder, output_folder=None, language=None):
+        """
+        Transcribe multiple audio files
+
+        Args:
+            audio_folder: Folder containing audio files
+            output_folder: Output folder for transcriptions (optional)
+            language: Language code or None for auto-detect
+        """
+        audio_folder = Path(audio_folder)
+        if output_folder:
+            output_folder = Path(output_folder)
+            output_folder.mkdir(exist_ok=True)
+
+        # Supported audio formats
+        audio_extensions = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.mp4', '.avi', '.mov'}
+
+        audio_files = [
+            f for f in audio_folder.iterdir()
+            if f.suffix.lower() in audio_extensions
+        ]
+
+        if not audio_files:
+            print("No audio files found!")
+            return
+
+        print(f"Found {len(audio_files)} audio files to transcribe")
+
+        results = []
+        for i, audio_file in enumerate(audio_files, 1):
+            print(f"\n[{i}/{len(audio_files)}] Processing: {audio_file.name}")
+
+            try:
+                result = self.transcribe_file(str(audio_file), language)
+                results.append({
+                    "file": audio_file.name,
+                    "transcription": result["text"],
+                    "language": result["language"],
+                    "processing_time": result["processing_time"]
+                })
+
+                # Save individual transcription
+                if output_folder:
+                    output_file = output_folder / f"{audio_file.stem}_transcription.txt"
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(f"File: {audio_file.name}\n")
+                        f.write(f"Language: {result['language']}\n")
+                        f.write(f"Processing time: {result['processing_time']:.2f}s\n")
+                        f.write(f"\nTranscription:\n{result['text']}")
+
+                print(f"✓ Completed in {result['processing_time']:.2f}s")
+
+            except Exception as e:
+                print(f"✗ Error processing {audio_file.name}: {str(e)}")
+                continue
+
+        return results
+
+def main():
+    parser = argparse.ArgumentParser(description="Offline Whisper Speech-to-Text")
+    parser.add_argument("input", help="Audio file or folder path")
+    parser.add_argument("--model", default="base",
+                       choices=["tiny", "base", "small", "medium", "large"],
+                       help="Whisper model size")
+    parser.add_argument("--language", help="Language code (e.g., en, es, fr)")
+    parser.add_argument("--output", help="Output folder for batch processing")
+    parser.add_argument("--task", default="transcribe",
+                       choices=["transcribe", "translate"],
+                       help="Task: transcribe or translate to English")
+    parser.add_argument("--timestamps", action="store_true",
+                       help="Show timestamps for segments")
+    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
+                       help="Device to use")
+
+    args = parser.parse_args()
+
+    # Initialize Whisper STT
+    stt = WhisperSTT(model_size=args.model, device=args.device)
+
+    input_path = Path(args.input)
+
+    if input_path.is_file():
+        # Single file transcription
+        try:
+            if args.timestamps:
+                segments = stt.transcribe_with_timestamps(str(input_path), args.language)
+                print("\n=== Transcription with Timestamps ===")
+                for segment in segments:
+                    print(f"[{segment['start']:.2f}s - {segment['end']:.2f}s]: {segment['text']}")
+            else:
+                result = stt.transcribe_file(str(input_path), args.language, args.task)
+                print(f"\n=== Transcription ===")
+                print(f"Language: {result['language']}")
+                print(f"Processing time: {result['processing_time']:.2f}s")
+                print(f"Text: {result['text']}")
+
+        except Exception as e:
+            print(f"Error: {str(e)}")
+
+    elif input_path.is_dir():
+        # Batch transcription
+        try:
+            results = stt.batch_transcribe(str(input_path), args.output, args.language)
+            print(f"\n=== Batch Transcription Complete ===")
+            print(f"Successfully processed {len(results)} files")
+
+            total_time = sum(r['processing_time'] for r in results)
+            print(f"Total processing time: {total_time:.2f}s")
+
+        except Exception as e:
+            print(f"Error: {str(e)}")
+
+    else:
+        print("Error: Input path must be a file or directory")
+
+# Example usage functions
+def example_usage():
+    """Example usage of the WhisperSTT class"""
+
+    # Initialize with base model (good balance of speed and accuracy)
+    stt = WhisperSTT(model_size="base")
+
+    # Example 1: Simple transcription
+    audio_file = "speech.wav"
+    if os.path.exists(audio_file):
+        result = stt.transcribe_file(audio_file)
+        print(f"Transcription: {result['text']}")
+        print(f"Detected language: {result['language']}")
+
+    # Example 2: Transcription with specific language
+    if os.path.exists(audio_file):
+        result = stt.transcribe_file(audio_file, language="en")
+        print(f"English transcription: {result['text']}")
+
+    # Example 3: Get timestamps
+    if os.path.exists(audio_file):
+        segments = stt.transcribe_with_timestamps(audio_file)
+        for segment in segments:
+            print(f"[{segment['start']:.1f}s]: {segment['text']}")
+
+    # Example 4: Batch processing
+    audio_folder = "audio_files"
+    if os.path.exists(audio_folder):
+        results = stt.batch_transcribe(audio_folder, output_folder="transcriptions")
