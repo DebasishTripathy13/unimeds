@@ -1,0 +1,296 @@
+# Simple Hindi-to-English Whisper Frontend with 5 minute audio working
+# Just upload a file and get results
+
+import whisper
+import gradio as gr
+import torch
+import librosa
+import numpy as np
+import soundfile as sf
+import os
+
+# Load Whisper model (only once)
+if 'model' not in globals():
+    print("🤖 Loading Whisper model...")
+    try:
+        model = whisper.load_model("base")  # Start with base model for stability
+        print("✅ Model loaded successfully!")
+    except Exception as e:
+        print(f"❌ Error loading model: {e}")
+        print("Trying to reload...")
+        model = whisper.load_model("base", device="cpu")  # Force CPU if GPU fails
+        print("✅ Model loaded on CPU!")
+
+def transcribe_audio(audio_file):
+    """
+    Simple transcription function
+    """
+    if audio_file is None:
+        return "❌ Please upload an audio file"
+    
+    try:
+        # Get the file path
+        file_path = audio_file.name if hasattr(audio_file, 'name') else audio_file
+        
+        print(f"🎯 Processing: {os.path.basename(file_path)}")
+        
+        # Load and preprocess audio
+        audio = whisper.load_audio(file_path)
+        audio = whisper.pad_or_trim(audio)
+        
+        # Create mel spectrogram
+        mel = whisper.log_mel_spectrogram(audio).to(model.device)
+        
+        # Detect language
+        _, probs = model.detect_language(mel)
+        detected_language = max(probs, key=probs.get)
+        confidence = max(probs.values())
+        
+        # Transcribe and translate to English
+        options = whisper.DecodingOptions(
+            language="hi",      # Hindi input
+            task="translate",   # Translate to English
+            fp16=torch.cuda.is_available()
+        )
+        
+        result = whisper.decode(model, mel, options)
+        
+        # Format results
+        translation = result.text.strip()
+        
+        return f"""
+🌐 **English Translation:**
+{translation}
+
+📊 **Detection Info:**
+• Detected Language: {detected_language}
+• Confidence: {confidence:.1%}
+• Status: ✅ Success
+        """
+        
+    except Exception as e:
+        return f"❌ **Error:** {str(e)}"
+
+# Create Gradio interface with file upload
+def create_simple_interface():
+    """Create a simple upload and transcribe interface"""
+    
+    def process_uploaded_file(audio_file):
+        """Process the uploaded audio file"""
+        if audio_file is None:
+            return "❌ Please upload an audio file"
+        
+        try:
+            # audio_file is the path to the uploaded file
+            print(f"🎯 Processing uploaded file: {os.path.basename(audio_file)}")
+            
+            # Method 1: Use Whisper's built-in transcribe function (more reliable)
+            result = model.transcribe(
+                audio_file,
+                language="hi",  # Hindi
+                task="translate",  # Translate to English
+                fp16=False,  # Disable FP16 to avoid GPU issues
+                verbose=False
+            )
+            
+            # Extract results
+            translation = result["text"].strip()
+            detected_language = result.get("language", "hi")
+            
+            return f"""🌐 ENGLISH TRANSLATION:
+"{translation}"
+
+📊 DETECTION INFO:
+• File: {os.path.basename(audio_file)}
+• Detected Language: {detected_language}
+• Status: ✅ Success"""
+            
+        except Exception as e:
+            # Fallback method if the above fails
+            try:
+                print("Trying alternative processing method...")
+                
+                # Load audio manually
+                audio = whisper.load_audio(audio_file)
+                audio = whisper.pad_or_trim(audio)
+                
+                # Create mel spectrogram
+                mel = whisper.log_mel_spectrogram(audio)
+                
+                # Move to CPU if GPU causes issues
+                if torch.cuda.is_available():
+                    try:
+                        mel = mel.to("cuda")
+                        model_device = "cuda"
+                    except:
+                        mel = mel.to("cpu") 
+                        model_device = "cpu"
+                else:
+                    mel = mel.to("cpu")
+                    model_device = "cpu"
+                
+                # Detect language
+                _, probs = model.detect_language(mel)
+                detected_language = max(probs, key=probs.get)
+                confidence = max(probs.values())
+                
+                # Transcribe with safer options
+                options = whisper.DecodingOptions(
+                    language="hi",
+                    task="translate",
+                    fp16=False,  # Disable FP16
+                    temperature=0.0
+                )
+                
+                result = whisper.decode(model, mel, options)
+                translation = result.text.strip()
+                
+                return f"""🌐 ENGLISH TRANSLATION:
+"{translation}"
+
+📊 DETECTION INFO:
+• File: {os.path.basename(audio_file)}
+• Detected Language: {detected_language}
+• Confidence: {confidence:.1%}
+• Processing: {model_device.upper()}
+• Status: ✅ Success (Fallback method)"""
+                
+            except Exception as e2:
+                return f"""❌ ERROR: {str(e)}
+
+🔧 TROUBLESHOOTING:
+• Original error: {str(e)}
+• Fallback error: {str(e2)}
+• Try a different audio file format
+• Make sure the file is a valid audio file
+• Audio should be less than 10 minutes for best results"""
+    
+    # Create the interface
+    interface = gr.Interface(
+        fn=process_uploaded_file,
+        inputs=gr.Audio(
+            label="📁 Upload Hindi Audio File",
+            type="filepath",  # This gives us the file path
+            sources=["upload"]  # Only allow file upload, not microphone
+        ),
+        outputs=gr.Textbox(
+            label="🎯 Results",
+            lines=10,
+            show_copy_button=True,
+            placeholder="Upload an audio file to see the English translation here..."
+        ),
+        title="🎵 Hindi → English Speech Translator",
+        description="""
+        **Simple Steps:**
+        1. Click the upload area below
+        2. Select your Hindi audio file (.mp3, .wav, .m4a, etc.)
+        3. Wait for processing
+        4. See the English translation!
+        
+        **Supported formats:** MP3, WAV, M4A, FLAC, OGG
+        """,
+        theme=gr.themes.Soft(),
+        allow_flagging="never"
+    )
+    
+    return interface
+
+# Simple upload function for Colab
+def upload_and_transcribe():
+    """Simple upload function for Google Colab"""
+    from google.colab import files
+    
+    print("📁 Select your Hindi audio file...")
+    uploaded = files.upload()
+    
+    if not uploaded:
+        print("❌ No file uploaded")
+        return
+    
+    # Process the first uploaded file
+    filename = list(uploaded.keys())[0]
+    print(f"\n🎯 Processing: {filename}")
+    
+    try:
+        # Load audio
+        audio = whisper.load_audio(filename)
+        audio = whisper.pad_or_trim(audio)
+        mel = whisper.log_mel_spectrogram(audio).to(model.device)
+        
+        # Detect language
+        _, probs = model.detect_language(mel)
+        detected_language = max(probs, key=probs.get)
+        confidence = max(probs.values())
+        
+        # Transcribe
+        options = whisper.DecodingOptions(
+            language="hi",
+            task="translate",
+            fp16=torch.cuda.is_available()
+        )
+        
+        result = whisper.decode(model, mel, options)
+        
+        # Display results
+        print("\n" + "="*60)
+        print("🎯 TRANSCRIPTION RESULTS")
+        print("="*60)
+        print(f"📁 File: {filename}")
+        print(f"🗣️  Detected Language: {detected_language}")
+        print(f"📊 Confidence: {confidence:.1%}")
+        print(f"\n🌐 ENGLISH TRANSLATION:")
+        print("-" * 40)
+        print(f'"{result.text.strip()}"')
+        print("="*60)
+        
+        return result.text.strip()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return None
+
+# Direct transcription function
+def transcribe_file(file_path):
+    """Direct transcription function"""
+    try:
+        print(f"🎯 Transcribing: {file_path}")
+        
+        # Load and process
+        audio = whisper.load_audio(file_path)
+        audio = whisper.pad_or_trim(audio)
+        mel = whisper.log_mel_spectrogram(audio).to(model.device)
+        
+        # Transcribe
+        options = whisper.DecodingOptions(
+            language="hi",
+            task="translate",
+            fp16=torch.cuda.is_available()
+        )
+        
+        result = whisper.decode(model, mel, options)
+        
+        print("✅ Transcription completed!")
+        print(f"Result: \"{result.text.strip()}\"")
+        
+        return result.text.strip()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return None
+
+print("🎯 SIMPLE WHISPER FRONTEND READY!")
+print("="*50)
+print("USAGE OPTIONS:")
+print("1. Web Interface (Auto-launched) - Upload files in browser")
+print("2. upload_and_transcribe() - Upload in Colab")  
+print("3. transcribe_file('path/to/file.mp3') - Direct function")
+
+# Launch the simple interface
+print("\n🚀 Launching web interface...")
+print("📱 The interface will open with a public URL you can share!")
+interface = create_simple_interface()
+interface.launch(
+    share=True,      # Creates public URL
+    debug=False,     # Clean output
+    quiet=True       # Less verbose
+)
