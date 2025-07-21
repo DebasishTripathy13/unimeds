@@ -1,231 +1,283 @@
-#!/usr/bin/env python3
-"""
-Offline Whisper Speech-to-Text Converter
-Supports multiple languages with focus on English
-"""
+# Hindi to English Speech-to-Text using Whisper on Google Colab
+# This notebook transcribes Hindi audio and translates it to English
 
+# Step 1: Install required packages
+!pip install openai-whisper
+!pip install gradio
+!pip install librosa
+!pip install soundfile
+
+# Step 2: Import necessary libraries
 import whisper
+import gradio as gr
+import numpy as np
+import torch
+import librosa
+from IPython.display import Audio, display
 import os
-import argparse
-import time
-from pathlib import Path
 
-class WhisperSTT:
-    def __init__(self, model_size="base", device="cpu"):
-        """
-        Initialize Whisper STT
+# Step 3: Load Whisper model
+# Available models: tiny, base, small, medium, large
+# Larger models are more accurate but slower
+print("Loading Whisper model...")
+model_size = "base"  # Change to "medium" or "large" for better accuracy
+model = whisper.load_model(model_size)
+print(f"Loaded {model_size} model successfully!")
 
-        Args:
-            model_size: Model size - "tiny", "base", "small", "medium", "large"
-            device: "cpu" or "cuda" for GPU acceleration
-        """
-        self.model_size = model_size
-        self.device = device
-        print(f"Loading Whisper {model_size} model...")
-        self.model = whisper.load_model(model_size, device=device)
-        print(f"Model loaded successfully on {device}")
+# Check if GPU is available
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 
-    def transcribe_file(self, audio_path, language=None, task="transcribe"):
-        """
-        Transcribe audio file
-
-        Args:
-            audio_path: Path to audio file
-            language: Language code (e.g., "en", "es", "fr") or None for auto-detect
-            task: "transcribe" or "translate" (translate to English)
-
-        Returns:
-            Dictionary with transcription results
-        """
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
-
-        print(f"Transcribing: {audio_path}")
-        start_time = time.time()
-
-        # Transcribe with options
-        result = self.model.transcribe(
-            audio_path,
-            language=language,
-            task=task,
-            verbose=False
+# Step 4: Define transcription function
+def transcribe_hindi_to_english(audio_file):
+    """
+    Transcribe Hindi audio to English text using Whisper
+    
+    Args:
+        audio_file: Path to audio file or audio array
+    
+    Returns:
+        dict: Contains transcribed and translated text
+    """
+    try:
+        # Load and preprocess audio
+        if isinstance(audio_file, str):
+            # If it's a file path
+            audio = whisper.load_audio(audio_file)
+        else:
+            # If it's already an audio array (from Gradio)
+            audio = audio_file
+        
+        # Pad or trim audio to 30 seconds (Whisper's input length)
+        audio = whisper.pad_or_trim(audio)
+        
+        # Convert to log-mel spectrogram
+        mel = whisper.log_mel_spectrogram(audio).to(model.device)
+        
+        # Detect language (optional - we know it's Hindi)
+        _, probs = model.detect_language(mel)
+        detected_lang = max(probs, key=probs.get)
+        print(f"Detected language: {detected_lang}")
+        
+        # Transcribe with translation to English
+        options = whisper.DecodingOptions(
+            language="hi",  # Hindi language code
+            task="translate",  # This translates to English
+            fp16=False if device == "cpu" else True
         )
-
-        end_time = time.time()
-        processing_time = end_time - start_time
-
+        
+        result = whisper.decode(model, mel, options)
+        
         return {
-            "text": result["text"].strip(),
-            "language": result["language"],
-            "segments": result["segments"],
-            "processing_time": processing_time
+            "detected_language": detected_lang,
+            "confidence": f"{max(probs.values()):.2%}",
+            "english_translation": result.text.strip()
+        }
+        
+    except Exception as e:
+        return {
+            "error": f"Transcription failed: {str(e)}",
+            "detected_language": "Unknown",
+            "confidence": "0%",
+            "english_translation": ""
         }
 
-    def transcribe_with_timestamps(self, audio_path, language=None):
-        """
-        Transcribe with detailed timestamps
-
-        Args:
-            audio_path: Path to audio file
-            language: Language code or None for auto-detect
-
-        Returns:
-            List of segments with timestamps
-        """
-        result = self.transcribe_file(audio_path, language)
-
-        segments = []
-        for segment in result["segments"]:
-            segments.append({
-                "start": segment["start"],
-                "end": segment["end"],
-                "text": segment["text"].strip(),
-                "confidence": segment.get("avg_logprob", 0)
-            })
-
-        return segments
-
-    def batch_transcribe(self, audio_folder, output_folder=None, language=None):
-        """
-        Transcribe multiple audio files
-
-        Args:
-            audio_folder: Folder containing audio files
-            output_folder: Output folder for transcriptions (optional)
-            language: Language code or None for auto-detect
-        """
-        audio_folder = Path(audio_folder)
-        if output_folder:
-            output_folder = Path(output_folder)
-            output_folder.mkdir(exist_ok=True)
-
-        # Supported audio formats
-        audio_extensions = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.mp4', '.avi', '.mov'}
-
-        audio_files = [
-            f for f in audio_folder.iterdir()
-            if f.suffix.lower() in audio_extensions
-        ]
-
-        if not audio_files:
-            print("No audio files found!")
-            return
-
-        print(f"Found {len(audio_files)} audio files to transcribe")
-
-        results = []
-        for i, audio_file in enumerate(audio_files, 1):
-            print(f"\n[{i}/{len(audio_files)}] Processing: {audio_file.name}")
-
-            try:
-                result = self.transcribe_file(str(audio_file), language)
-                results.append({
-                    "file": audio_file.name,
-                    "transcription": result["text"],
-                    "language": result["language"],
-                    "processing_time": result["processing_time"]
-                })
-
-                # Save individual transcription
-                if output_folder:
-                    output_file = output_folder / f"{audio_file.stem}_transcription.txt"
-                    with open(output_file, 'w', encoding='utf-8') as f:
-                        f.write(f"File: {audio_file.name}\n")
-                        f.write(f"Language: {result['language']}\n")
-                        f.write(f"Processing time: {result['processing_time']:.2f}s\n")
-                        f.write(f"\nTranscription:\n{result['text']}")
-
-                print(f"✓ Completed in {result['processing_time']:.2f}s")
-
-            except Exception as e:
-                print(f"✗ Error processing {audio_file.name}: {str(e)}")
-                continue
-
-        return results
-
-def main():
-    parser = argparse.ArgumentParser(description="Offline Whisper Speech-to-Text")
-    parser.add_argument("input", help="Audio file or folder path")
-    parser.add_argument("--model", default="base",
-                       choices=["tiny", "base", "small", "medium", "large"],
-                       help="Whisper model size")
-    parser.add_argument("--language", help="Language code (e.g., en, es, fr)")
-    parser.add_argument("--output", help="Output folder for batch processing")
-    parser.add_argument("--task", default="transcribe",
-                       choices=["transcribe", "translate"],
-                       help="Task: transcribe or translate to English")
-    parser.add_argument("--timestamps", action="store_true",
-                       help="Show timestamps for segments")
-    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
-                       help="Device to use")
-
-    args = parser.parse_args()
-
-    # Initialize Whisper STT
-    stt = WhisperSTT(model_size=args.model, device=args.device)
-
-    input_path = Path(args.input)
-
-    if input_path.is_file():
-        # Single file transcription
-        try:
-            if args.timestamps:
-                segments = stt.transcribe_with_timestamps(str(input_path), args.language)
-                print("\n=== Transcription with Timestamps ===")
-                for segment in segments:
-                    print(f"[{segment['start']:.2f}s - {segment['end']:.2f}s]: {segment['text']}")
-            else:
-                result = stt.transcribe_file(str(input_path), args.language, args.task)
-                print(f"\n=== Transcription ===")
-                print(f"Language: {result['language']}")
-                print(f"Processing time: {result['processing_time']:.2f}s")
-                print(f"Text: {result['text']}")
-
-        except Exception as e:
-            print(f"Error: {str(e)}")
-
-    elif input_path.is_dir():
-        # Batch transcription
-        try:
-            results = stt.batch_transcribe(str(input_path), args.output, args.language)
-            print(f"\n=== Batch Transcription Complete ===")
-            print(f"Successfully processed {len(results)} files")
-
-            total_time = sum(r['processing_time'] for r in results)
-            print(f"Total processing time: {total_time:.2f}s")
-
-        except Exception as e:
-            print(f"Error: {str(e)}")
-
+# Step 5: Test with sample audio (if you have one)
+def test_transcription(audio_path):
+    """Test the transcription function"""
+    if os.path.exists(audio_path):
+        result = transcribe_hindi_to_english(audio_path)
+        print("Transcription Results:")
+        print(f"Detected Language: {result.get('detected_language', 'N/A')}")
+        print(f"Confidence: {result.get('confidence', 'N/A')}")
+        print(f"English Translation: {result.get('english_translation', 'N/A')}")
+        if 'error' in result:
+            print(f"Error: {result['error']}")
     else:
-        print("Error: Input path must be a file or directory")
+        print(f"Audio file not found: {audio_path}")
 
-# Example usage functions
-def example_usage():
-    """Example usage of the WhisperSTT class"""
+# Step 6: Create Gradio interface for easy usage
+def create_gradio_interface():
+    """Create a web interface using Gradio"""
+    
+    def process_audio(audio_input):
+        if audio_input is None:
+            return "Please upload an audio file.", "", ""
+        
+        # Get sample rate and audio data
+        sample_rate, audio_data = audio_input
+        
+        # Convert to float32 and normalize
+        if audio_data.dtype == np.int16:
+            audio_data = audio_data.astype(np.float32) / 32768.0
+        elif audio_data.dtype == np.int32:
+            audio_data = audio_data.astype(np.float32) / 2147483648.0
+        
+        # Resample to 16kHz (Whisper's expected sample rate)
+        if sample_rate != 16000:
+            audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
+        
+        # Handle stereo audio (convert to mono)
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+        
+        result = transcribe_hindi_to_english(audio_data)
+        
+        if 'error' in result:
+            return result['error'], "", ""
+        
+        return (
+            result.get('english_translation', 'No translation available'),
+            result.get('detected_language', 'Unknown'),
+            result.get('confidence', '0%')
+        )
+    
+    # Create Gradio interface
+    interface = gr.Interface(
+        fn=process_audio,
+        inputs=gr.Audio(
+            sources=["microphone", "upload"],
+            type="numpy",
+            label="Upload Hindi Audio or Record"
+        ),
+        outputs=[
+            gr.Textbox(label="English Translation", lines=5),
+            gr.Textbox(label="Detected Language"),
+            gr.Textbox(label="Confidence")
+        ],
+        title="Hindi to English Speech Translator",
+        description="Upload Hindi audio or record directly to get English translation using Whisper AI",
+        examples=[
+            # Add example audio files here if you have them
+        ]
+    )
+    
+    return interface
 
-    # Initialize with base model (good balance of speed and accuracy)
-    stt = WhisperSTT(model_size="base")
+# Step 7: Launch the interface
+print("Creating Gradio interface...")
+interface = create_gradio_interface()
 
-    # Example 1: Simple transcription
-    audio_file = "speech.wav"
-    if os.path.exists(audio_file):
-        result = stt.transcribe_file(audio_file)
-        print(f"Transcription: {result['text']}")
-        print(f"Detected language: {result['language']}")
+# Launch with public sharing (optional)
+# Set share=True to get a public URL, share=False for local only
+print("Launching interface...")
+interface.launch(share=True, debug=True)
 
-    # Example 2: Transcription with specific language
-    if os.path.exists(audio_file):
-        result = stt.transcribe_file(audio_file, language="en")
-        print(f"English transcription: {result['text']}")
+# Step 8: Upload and test audio file
 
-    # Example 3: Get timestamps
-    if os.path.exists(audio_file):
-        segments = stt.transcribe_with_timestamps(audio_file)
-        for segment in segments:
-            print(f"[{segment['start']:.1f}s]: {segment['text']}")
+# Method 1: Upload file through Colab interface
+from google.colab import files
+import io
 
-    # Example 4: Batch processing
-    audio_folder = "audio_files"
-    if os.path.exists(audio_folder):
-        results = stt.batch_transcribe(audio_folder, output_folder="transcriptions")
+def upload_and_test():
+    """Upload audio file and test transcription"""
+    print("Please select your Hindi audio file...")
+    uploaded = files.upload()
+    
+    for filename in uploaded.keys():
+        print(f"\nTesting file: {filename}")
+        result = transcribe_hindi_to_english(filename)
+        
+        print("="*50)
+        print("TRANSCRIPTION RESULTS:")
+        print("="*50)
+        print(f"Detected Language: {result.get('detected_language', 'N/A')}")
+        print(f"Confidence: {result.get('confidence', 'N/A')}")
+        print(f"English Translation:")
+        print(f"'{result.get('english_translation', 'No translation available')}'")
+        
+        if 'error' in result:
+            print(f"Error: {result['error']}")
+        
+        print("="*50)
+
+# Method 2: Direct file path testing
+def test_audio_file(file_path):
+    """
+    Test a specific audio file
+    Usage: test_audio_file("my_hindi_audio.wav")
+    """
+    if not os.path.exists(file_path):
+        print(f"Error: File '{file_path}' not found!")
+        print("Make sure the file is uploaded to Colab or check the path.")
+        return
+    
+    print(f"Processing: {file_path}")
+    result = transcribe_hindi_to_english(file_path)
+    
+    print("="*50)
+    print("TRANSCRIPTION RESULTS:")
+    print("="*50)
+    print(f"File: {file_path}")
+    print(f"Detected Language: {result.get('detected_language', 'N/A')}")
+    print(f"Confidence: {result.get('confidence', 'N/A')}")
+    print(f"English Translation:")
+    print(f"'{result.get('english_translation', 'No translation available')}'")
+    
+    if 'error' in result:
+        print(f"Error: {result['error']}")
+    
+    print("="*50)
+    return result
+
+# Method 3: Test with sample audio (if available)
+def create_sample_audio():
+    """Create a sample audio file for testing (text-to-speech)"""
+    try:
+        from gtts import gTTS
+        import pygame
+        
+        # Create sample Hindi text
+        hindi_text = "नमस्ते, मैं एक परीक्षण संदेश हूं"
+        
+        tts = gTTS(text=hindi_text, lang='hi')
+        tts.save("sample_hindi.mp3")
+        
+        print("Sample Hindi audio created: sample_hindi.mp3")
+        print("You can now test with: test_audio_file('sample_hindi.mp3')")
+        
+    except ImportError:
+        print("gTTS not installed. Install with: !pip install gtts pygame")
+
+# Step 9: Batch processing function (bonus)
+def batch_transcribe(folder_path):
+    """
+    Process multiple audio files in a folder
+    """
+    results = []
+    audio_extensions = ['.wav', '.mp3', '.m4a', '.flac', '.ogg']
+    
+    for filename in os.listdir(folder_path):
+        if any(filename.lower().endswith(ext) for ext in audio_extensions):
+            file_path = os.path.join(folder_path, filename)
+            print(f"Processing: {filename}")
+            result = transcribe_hindi_to_english(file_path)
+            results.append({
+                'filename': filename,
+                'result': result
+            })
+    
+    return results
+
+print("\n" + "="*50)
+print("SETUP COMPLETE!")
+print("="*50)
+print("The Whisper model is loaded and ready to use.")
+print("\nTESTING OPTIONS:")
+print("="*50)
+print("1. Web Interface: Use the Gradio interface above")
+print("2. Upload & Test: Run upload_and_test()")
+print("3. Direct File: Run test_audio_file('filename.wav')")
+print("4. Create Sample: Run create_sample_audio()")
+print("\nEXAMPLE USAGE:")
+print("="*50)
+print("# Upload file through Colab interface:")
+print("upload_and_test()")
+print("")
+print("# Test specific file:")
+print("test_audio_file('my_hindi_audio.wav')")
+print("")
+print("# Create sample audio for testing:")
+print("create_sample_audio()")
+print("\nSupported audio formats: WAV, MP3, M4A, FLAC, OGG")
+print("The model will translate Hindi speech directly to English text.")
