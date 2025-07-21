@@ -1,4 +1,4 @@
-# Hindi to English Speech-to-Text using Whisper on Google Colab
+# Hindi to English Speech-to-Text using Whisper on Google Colab which allows translation for a small model
 # This notebook transcribes Hindi audio and translates it to English
 
 # Step 1: Install required packages
