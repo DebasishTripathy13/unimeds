@@ -1,0 +1,27 @@
+Large - v2
+
+Performance Metrics:
+- Total Translation Time: 6.59 seconds
+- Total Processing Time (including model load):26.29 seconds
+- Audio Duration:102.75 seconds
+- Real-Time Factor (RTF):0.06 (a value < 1 is faster than real-time)
+
+Memory Usage:
+- Initial RAM Usage:2.4 GB
+- Peak RAM Usage:4.1 GB
+- RAM Consumed by Model:1.5 GB
+- RAM Consumed During Transcription:132.9 MB
+
+Medium
+
+Performance Metrics:
+- Total Translation Time:0.68 seconds
+- Total Processing Time (including model load):32.38 seconds
+- Audio Duration:102.75 seconds
+- Real-Time Factor (RTF):0.01 (a value < 1 is faster than real-time)
+
+Memory Usage:*
+- Initial RAM Usage:4.0 GB
+- Peak RAM Usage:4.3 GB
+- RAM Consumed by Model:317.3 MB
+- RAM Consumed During Transcription:24.6 kB
