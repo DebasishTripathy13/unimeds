@@ -1,0 +1,283 @@
+import time
+import os
+from google.colab import files
+import faster_whisper
+import soundfile as sf
+import io
+import torch
+import psutil
+import humanize
+import librosa
+from huggingface_hub import login
+import getpass
+
+# --- 1. Hugging Face Login with Token Input ---
+def setup_huggingface_login():
+    """
+    Handles Hugging Face authentication with token input
+    """
+    try:
+        print("=== Hugging Face Authentication ===")
+        print("To access some models, you may need to authenticate with Hugging Face.")
+        print("You can get your token from: https://huggingface.co/settings/tokens")
+        
+        use_token = input("\nDo you want to login with a Hugging Face token? (y/n): ").lower().strip()
+        
+        if use_token in ['y', 'yes']:
+            # Get token securely
+            token = getpass.getpass("Enter your Hugging Face access token: ")
+            
+            if token.strip():
+                try:
+                    login(token=token.strip())
+                    print("✅ Successfully logged in to Hugging Face!")
+                    return True
+                except Exception as e:
+                    print(f"❌ Login failed: {str(e)}")
+                    print("Continuing without authentication...")
+                    return False
+            else:
+                print("Empty token provided. Continuing without authentication...")
+                return False
+        else:
+            print("Continuing without Hugging Face authentication...")
+            return False
+    except Exception as e:
+        print(f"Error during authentication setup: {str(e)}")
+        return False
+
+# Setup Hugging Face login
+hf_authenticated = setup_huggingface_login()
+
+# --- 2. Audio File Upload ---
+print("\n" + "="*50)
+print("AUDIO FILE UPLOAD")
+print("="*50)
+print("Please select your Hindi audio MP3 file...")
+uploaded = files.upload()
+
+if not uploaded:
+    print("❌ No file uploaded. Please upload an audio file.")
+    exit()
+
+audio_filename = list(uploaded.keys())[0]
+print(f"✅ '{audio_filename}' uploaded successfully.")
+
+# --- 3. Define the Speech-to-Text (STT) Function with Measurements ---
+
+def process_audio_with_whisper(audio_path: str, model_name: str):
+    """
+    Processes an audio file using faster-whisper with a specified model for STT and measures performance.
+    
+    Args:
+        audio_path (str): The path to the audio file.
+        model_name (str): The name of the model to use (e.g., "tiny-int8").
+    
+    Returns:
+        tuple: A tuple containing:
+            - str: The transcribed text.
+            - float: Time taken for transcription in seconds.
+            - dict: A dictionary of performance metrics.
+    """
+    print(f"\n{'='*50}")
+    print(f"TRANSCRIPTION PROCESS")
+    print(f"{'='*50}")
+    print(f"🎵 Processing audio file: {audio_path}")
+    print(f"🤖 Using model: {model_name}")
+    
+    # Get process info for monitoring
+    process = psutil.Process(os.getpid())
+    initial_ram = process.memory_info().rss
+    initial_vram = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+    
+    print(f"\n📊 Initial Memory Usage:")
+    print(f"   RAM: {humanize.naturalsize(initial_ram)}")
+    if torch.cuda.is_available():
+        print(f"   VRAM: {humanize.naturalsize(initial_vram)}")
+    
+    print(f"\n🔄 Loading Faster-Whisper model ({model_name})...")
+    start_model_load_time = time.time()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"   Device: {device}")
+    
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    
+    try:
+        # Load the model
+        model = faster_whisper.WhisperModel(model_name, device=device, compute_type="int8")
+        
+        end_model_load_time = time.time()
+        model_load_time = end_model_load_time - start_model_load_time
+        print(f"✅ Model loaded in {model_load_time:.2f} seconds.")
+        
+        # Memory usage after model load
+        ram_after_load = process.memory_info().rss
+        vram_after_load = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        
+        print(f"\n📊 Memory Usage After Model Load:")
+        print(f"   RAM: {humanize.naturalsize(ram_after_load)} (+{humanize.naturalsize(ram_after_load - initial_ram)})")
+        if torch.cuda.is_available():
+            print(f"   VRAM: {humanize.naturalsize(vram_after_load)} (+{humanize.naturalsize(vram_after_load - initial_vram)})")
+        
+        # Get audio duration
+        start_transcription_time = time.time()
+        try:
+            audio_duration = librosa.get_duration(filename=audio_path)
+            print(f"\n🎵 Audio duration: {audio_duration:.2f} seconds ({audio_duration/60:.2f} minutes)")
+        except Exception as e:
+            print(f"⚠  Could not get audio duration: {e}")
+            audio_duration = None
+        
+        print(f"\n🚀 Starting transcription...")
+        
+        # Perform transcription
+        segments, info = model.transcribe(
+            audio_path, 
+            language="hi",  # Hindi language code
+            beam_size=5,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500)
+        )
+        
+        # Collect all segments
+        transcribed_text = ""
+        segment_count = 0
+        
+        for segment in segments:
+            transcribed_text += segment.text + " "
+            segment_count += 1
+        
+        end_transcription_time = time.time()
+        transcription_time = end_transcription_time - start_transcription_time
+        
+        # Final memory usage
+        final_ram = process.memory_info().rss
+        final_vram = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        
+        # Calculate performance metrics
+        performance_metrics = {
+            "model_load_time": model_load_time,
+            "transcription_time": transcription_time,
+            "total_time": model_load_time + transcription_time,
+            "audio_duration": audio_duration,
+            "realtime_factor": transcription_time / audio_duration if audio_duration else None,
+            "segments_processed": segment_count,
+            "initial_ram": initial_ram,
+            "final_ram": final_ram,
+            "ram_usage": final_ram - initial_ram,
+            "initial_vram": initial_vram,
+            "final_vram": final_vram,
+            "vram_usage": final_vram - initial_vram,
+            "device": device,
+            "model_name": model_name,
+            "detected_language": info.language,
+            "language_probability": info.language_probability
+        }
+        
+        # Print results
+        print(f"\n{'='*50}")
+        print(f"TRANSCRIPTION RESULTS")
+        print(f"{'='*50}")
+        print(f"✅ Transcription completed successfully!")
+        print(f"📝 Segments processed: {segment_count}")
+        print(f"🌐 Detected language: {info.language} (confidence: {info.language_probability:.2f})")
+        print(f"⏱  Transcription time: {transcription_time:.2f} seconds")
+        if audio_duration:
+            print(f"⚡ Real-time factor: {transcription_time / audio_duration:.2f}x")
+        print(f"💾 Peak RAM usage: +{humanize.naturalsize(performance_metrics['ram_usage'])}")
+        if torch.cuda.is_available():
+            print(f"🎮 Peak VRAM usage: +{humanize.naturalsize(performance_metrics['vram_usage'])}")
+        
+        return transcribed_text.strip(), transcription_time, performance_metrics
+        
+    except Exception as e:
+        print(f"❌ Error during transcription: {str(e)}")
+        return None, None, None
+
+# --- 4. Model Selection ---
+print(f"\n{'='*50}")
+print("MODEL SELECTION")
+print(f"{'='*50}")
+
+available_models = [
+    ("tiny", "Fastest, least accurate"),
+    ("base", "Good balance of speed and accuracy"),
+    ("small", "Better accuracy, slower"),
+    ("medium", "High accuracy, moderate speed"),
+    ("large-v2", "Highest accuracy, slowest"),
+    ("large-v3", "Latest large model")
+]
+
+print("Available Whisper models:")
+for i, (model, description) in enumerate(available_models, 1):
+    print(f"  {i}. {model} - {description}")
+
+try:
+    choice = int(input(f"\nSelect a model (1-{len(available_models)}): ")) - 1
+    if 0 <= choice < len(available_models):
+        selected_model = available_models[choice][0]
+    else:
+        print("Invalid choice. Using 'base' model as default.")
+        selected_model = "base"
+except ValueError:
+    print("Invalid input. Using 'base' model as default.")
+    selected_model = "base"
+
+print(f"🤖 Selected model: {selected_model}")
+
+# --- 5. Process the Audio ---
+result = process_audio_with_whisper(audio_filename, selected_model)
+
+if result[0] is not None:  # If transcription was successful
+    transcribed_text, transcription_time, metrics = result
+    
+    # Display the transcribed text
+    print(f"\n{'='*50}")
+    print("TRANSCRIBED TEXT")
+    print(f"{'='*50}")
+    print(transcribed_text)
+    
+    # Save transcription to file
+    output_filename = f"transcription_{selected_model}_{int(time.time())}.txt"
+    with open(output_filename, 'w', encoding='utf-8') as f:
+        f.write(f"Model: {selected_model}\n")
+        f.write(f"Audio File: {audio_filename}\n")
+        f.write(f"Transcription Time: {transcription_time:.2f} seconds\n")
+        f.write(f"Detected Language: {metrics['detected_language']}\n")
+        f.write(f"Language Probability: {metrics['language_probability']:.2f}\n")
+        f.write(f"\n{'='*50}\n")
+        f.write("TRANSCRIBED TEXT\n")
+        f.write(f"{'='*50}\n")
+        f.write(transcribed_text)
+    
+    print(f"\n💾 Transcription saved to: {output_filename}")
+    
+    # Offer to download the transcription file
+    try:
+        files.download(output_filename)
+        print(f"📥 Downloaded: {output_filename}")
+    except Exception as e:
+        print(f"⚠  Could not auto-download file: {e}")
+        print(f"You can manually download '{output_filename}' from the file browser.")
+    
+    # Performance summary
+    print(f"\n{'='*50}")
+    print("PERFORMANCE SUMMARY")
+    print(f"{'='*50}")
+    print(f"🤖 Model: {metrics['model_name']}")
+    print(f"🖥  Device: {metrics['device']}")
+    print(f"⏱  Total processing time: {metrics['total_time']:.2f} seconds")
+    print(f"📝 Segments processed: {metrics['segments_processed']}")
+    if metrics['realtime_factor']:
+        print(f"⚡ Real-time factor: {metrics['realtime_factor']:.2f}x")
+    print(f"💾 RAM usage: {humanize.naturalsize(metrics['ram_usage'])}")
+    if metrics['vram_usage'] > 0:
+        print(f"🎮 VRAM usage: {humanize.naturalsize(metrics['vram_usage'])}")
+
+else:
+    print("❌ Transcription failed. Please check your audio file and try again.")
+
+print(f"\n{'='*50}")
+print("PROCESS COMPLETED")
+print(f"{'='*50}")
